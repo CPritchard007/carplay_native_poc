@@ -1,55 +1,31 @@
 import 'package:flutter/services.dart';
 
-class CarPlayListItem {
-  const CarPlayListItem({required this.title, this.subtitle});
+import '../telemetry/telemetry_snapshot.dart';
 
-  final String title;
-  final String? subtitle;
-
-  Map<String, Object?> toMap() {
-    return <String, Object?>{'title': title, 'subtitle': subtitle};
-  }
-}
-
-class CarPlaySection {
-  const CarPlaySection({this.header, required this.items});
-
-  final String? header;
-  final List<CarPlayListItem> items;
-
-  Map<String, Object?> toMap() {
-    return <String, Object?>{
-      'header': header,
-      'items': items.map((item) => item.toMap()).toList(),
-    };
-  }
-}
-
-class CarPlayListTemplatePayload {
-  const CarPlayListTemplatePayload({
-    required this.title,
-    required this.sections,
-  });
-
-  final String title;
-  final List<CarPlaySection> sections;
-
-  Map<String, Object?> toMap() {
-    return <String, Object?>{
-      'title': title,
-      'sections': sections.map((section) => section.toMap()).toList(),
-    };
-  }
-}
+typedef CarPlayMethodHandler =
+    Future<Object?> Function(String method, Object? arguments);
 
 class CarPlayService {
+  const CarPlayService();
+
   static const MethodChannel _channel = MethodChannel(
     'com.cpritchard007.carplay_native_poc/data',
   );
 
-  static Future<void> setRootTemplate(
-    CarPlayListTemplatePayload payload,
-  ) async {
-    await _channel.invokeMethod<void>('setRootTemplate', payload.toMap());
+  void registerMethodHandler(CarPlayMethodHandler handler) {
+    _channel.setMethodCallHandler((MethodCall call) {
+      return handler(call.method, call.arguments);
+    });
+  }
+
+  Future<void> updateTelemetrySnapshot(TelemetrySnapshot snapshot) async {
+    try {
+      await _channel.invokeMethod<void>(
+        'updateTelemetrySnapshot',
+        snapshot.toMap(),
+      );
+    } on MissingPluginException {
+      // The native bridge only exists on iOS for this proof of concept.
+    }
   }
 }

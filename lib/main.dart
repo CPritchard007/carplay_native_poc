@@ -1,96 +1,231 @@
 import 'package:flutter/material.dart';
-import 'package:carplay_native_poc/service/carplay_service.dart';
 
-void main() {
-  runApp(const MyApp());
+import 'telemetry/telemetry_controller.dart';
+import 'telemetry/telemetry_snapshot.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await TelemetryController.instance.initialize();
+  runApp(MyApp(controller: TelemetryController.instance));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, required this.controller});
+
+  final TelemetryControlling controller;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'CarPlay Native POC',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const HomeScreen(),
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0F4C5C)),
+      ),
+      home: HomeScreen(controller: controller),
     );
   }
 }
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, required this.controller});
 
-  Future<void> _sendDemoTemplate(BuildContext context) async {
-    try {
-      await CarPlayService.setRootTemplate(
-        const CarPlayListTemplatePayload(
-          title: 'Trips',
-          sections: <CarPlaySection>[
-            CarPlaySection(
-              header: 'Upcoming',
-              items: <CarPlayListItem>[
-                CarPlayListItem(title: 'Office', subtitle: 'ETA 18 min'),
-                CarPlayListItem(title: 'Airport', subtitle: 'ETA 42 min'),
-              ],
-            ),
-            CarPlaySection(
-              header: 'Recent',
-              items: <CarPlayListItem>[
-                CarPlayListItem(title: 'Home', subtitle: '12 King St W'),
-                CarPlayListItem(title: 'Gym', subtitle: '401 Adelaide St W'),
-              ],
-            ),
-          ],
-        ),
-      );
-
-      if (!context.mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sent demo CarPlay template to native iOS.'),
-        ),
-      );
-    } on Object catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send CarPlay data: $error')),
-      );
-    }
-  }
+  final TelemetryControlling controller;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('CarPlay Native Bridge')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (BuildContext context, Widget? child) {
+        final TelemetrySnapshot snapshot = controller.snapshot;
+        final bool canStart =
+            !snapshot.isTracking &&
+            snapshot.status != TelemetryStatus.starting &&
+            snapshot.status != TelemetryStatus.stopping;
+        final bool canStop =
+            snapshot.isTracking &&
+            snapshot.status != TelemetryStatus.starting &&
+            snapshot.status != TelemetryStatus.stopping;
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('Background Telemetry')),
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'Track GPS telemetry for CarPlay and speak the current direction in background mode.',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: canStart ? controller.startTracking : null,
+                    child: const Text('Start Background Mode'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: canStop ? controller.stopTracking : null,
+                    child: const Text('Stop Background Mode'),
+                  ),
+                  const SizedBox(height: 24),
+                  _StatusSection(snapshot: snapshot),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: GridView.count(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: 1.45,
+                      children: <Widget>[
+                        _MetricCard(
+                          label: 'Latitude',
+                          value: _formatCoordinate(snapshot.latitude),
+                        ),
+                        _MetricCard(
+                          label: 'Longitude',
+                          value: _formatCoordinate(snapshot.longitude),
+                        ),
+                        _MetricCard(
+                          label: 'Rotation',
+                          value: _formatRotation(
+                            snapshot.headingDegrees,
+                            snapshot.directionLabel,
+                          ),
+                        ),
+                        _MetricCard(
+                          label: 'Elevation',
+                          value: _formatElevation(snapshot.altitudeMeters),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StatusSection extends StatelessWidget {
+  const _StatusSection({required this.snapshot});
+
+  final TelemetrySnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final List<Widget> children = <Widget>[
+      Text(
+        'Status: ${snapshot.status.label}',
+        style: theme.textTheme.titleMedium,
+      ),
+      const SizedBox(height: 8),
+      Text(
+        'Updated: ${_formatUpdatedAt(snapshot.updatedAtIso8601)}',
+        style: theme.textTheme.bodyMedium,
+      ),
+    ];
+
+    if (snapshot.errorMessage case final String errorMessage?) {
+      children.add(const SizedBox(height: 8));
+      children.add(
+        Text(
+          errorMessage,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.error,
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    );
+  }
+}
+
+class _MetricCard extends StatelessWidget {
+  const _MetricCard({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text(
-              'Send a native CarPlay list template from Flutter over a MethodChannel.',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text(label, style: theme.textTheme.labelLarge),
             const SizedBox(height: 12),
-            Text(
-              'Connect the app to CarPlay, then use the button below to push a native list template to the CarPlay scene.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 24),
-            FilledButton(
-              onPressed: () => _sendDemoTemplate(context),
-              child: const Text('Send Demo CarPlay Data'),
+            Flexible(
+              child: FittedBox(
+                alignment: Alignment.centerLeft,
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  style: theme.textTheme.headlineSmall,
+                ),
+              ),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+String _formatCoordinate(double? value) {
+  if (value == null) {
+    return 'Unavailable';
+  }
+
+  return value.toStringAsFixed(6);
+}
+
+String _formatRotation(double? headingDegrees, String? directionLabel) {
+  if (headingDegrees == null) {
+    return 'Unavailable';
+  }
+
+  final String suffix = directionLabel == null ? '' : ' $directionLabel';
+  return '${headingDegrees.toStringAsFixed(1)}°$suffix';
+}
+
+String _formatElevation(double? altitudeMeters) {
+  if (altitudeMeters == null) {
+    return 'Unavailable';
+  }
+
+  return '${altitudeMeters.toStringAsFixed(1)} m';
+}
+
+String _formatUpdatedAt(String? updatedAtIso8601) {
+  if (updatedAtIso8601 == null) {
+    return 'Never';
+  }
+
+  final DateTime? parsed = DateTime.tryParse(updatedAtIso8601);
+  if (parsed == null) {
+    return updatedAtIso8601;
+  }
+
+  final DateTime local = parsed.toLocal();
+  String twoDigits(int value) => value.toString().padLeft(2, '0');
+  return '${local.year}-${twoDigits(local.month)}-${twoDigits(local.day)} '
+      '${twoDigits(local.hour)}:${twoDigits(local.minute)}:${twoDigits(local.second)}';
 }

@@ -2,14 +2,43 @@ import CarPlay
 import Flutter
 import Foundation
 
+private struct TelemetrySnapshot {
+  let isTracking: Bool
+  let latitude: Double?
+  let longitude: Double?
+  let headingDegrees: Double?
+  let altitudeMeters: Double?
+  let directionLabel: String?
+  let status: String
+  let updatedAtIso8601: String?
+  let errorMessage: String?
+
+  init?(_ arguments: [String: Any]) {
+    guard let isTracking = arguments["isTracking"] as? Bool,
+          let status = arguments["status"] as? String else {
+      return nil
+    }
+
+    self.isTracking = isTracking
+    latitude = arguments["latitude"] as? Double
+    longitude = arguments["longitude"] as? Double
+    headingDegrees = arguments["headingDegrees"] as? Double
+    altitudeMeters = arguments["altitudeMeters"] as? Double
+    directionLabel = arguments["directionLabel"] as? String
+    self.status = status
+    updatedAtIso8601 = arguments["updatedAtIso8601"] as? String
+    errorMessage = arguments["errorMessage"] as? String
+  }
+}
+
 final class CarPlayManager: NSObject {
   static let shared = CarPlayManager()
 
   private let channelName = "com.cpritchard007.carplay_native_poc/data"
   private var interfaceController: CPInterfaceController?
   private var methodChannel: FlutterMethodChannel?
-  private var currentRootTemplate: CPListTemplate?
-  private var queuedRootTemplate: CPListTemplate?
+  private var currentRootTemplate: CPTemplate?
+  private var latestSnapshot: TelemetrySnapshot?
 
   private override init() {
     super.init()
@@ -29,22 +58,8 @@ final class CarPlayManager: NSObject {
 
   func connect(interfaceController: CPInterfaceController) {
     self.interfaceController = interfaceController
-
-    if let queuedRootTemplate {
-      currentRootTemplate = queuedRootTemplate
-      self.interfaceController?.setRootTemplate(queuedRootTemplate, animated: true)
-      self.queuedRootTemplate = nil
-      return
-    }
-
-    if let currentRootTemplate {
-      self.interfaceController?.setRootTemplate(currentRootTemplate, animated: false)
-      return
-    }
-
-    let template = makeWaitingTemplate()
-    currentRootTemplate = template
-    self.interfaceController?.setRootTemplate(template, animated: false)
+    renderWaitingTemplate()
+    requestTelemetrySnapshot()
   }
 
   func disconnect() {
@@ -53,83 +68,209 @@ final class CarPlayManager: NSObject {
 
   private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
-    case "setRootTemplate":
+    case "updateTelemetrySnapshot":
       guard let arguments = call.arguments as? [String: Any],
-            let template = makeListTemplate(arguments: arguments) else {
+            let snapshot = TelemetrySnapshot(arguments) else {
         result(
           FlutterError(
             code: "invalid_arguments",
-            message: "Expected a map containing a title and sections.",
+            message: "Expected a telemetry snapshot map.",
             details: call.arguments
           )
         )
         return
       }
 
-      currentRootTemplate = template
-      if let interfaceController {
-        interfaceController.setRootTemplate(template, animated: true)
-      } else {
-        queuedRootTemplate = template
-      }
-
+      latestSnapshot = snapshot
+      render(snapshot: snapshot, animated: true)
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
   }
 
-  private func makeWaitingTemplate() -> CPListTemplate {
-    let item = CPListItem(
-      text: "Waiting for Flutter data",
-      detailText: "Send a template over the MethodChannel to populate CarPlay."
-    )
-    let section = CPListSection(
-      items: [item],
-      header: "CarPlay",
-      sectionIndexTitle: nil
-    )
-    return CPListTemplate(title: "CarPlay Native", sections: [section])
+  private func requestTelemetrySnapshot() {
+    invokeFlutter(method: "getTelemetrySnapshot")
   }
 
-  private func makeListTemplate(arguments: [String: Any]) -> CPListTemplate? {
-    guard let title = arguments["title"] as? String,
-          let sectionMaps = arguments["sections"] as? [[String: Any]] else {
-      return nil
-    }
-
-    let sections = sectionMaps.compactMap(makeSection(from:))
-    guard !sections.isEmpty else {
-      return nil
-    }
-
-    return CPListTemplate(title: title, sections: sections)
+  private func requestStartTracking() {
+    invokeFlutter(method: "startTracking")
   }
 
-  private func makeSection(from map: [String: Any]) -> CPListSection? {
-    guard let itemMaps = map["items"] as? [[String: Any]] else {
-      return nil
-    }
+  private func requestStopTracking() {
+    invokeFlutter(method: "stopTracking")
+  }
 
-    let items = itemMaps.compactMap(makeItem(from:))
-    guard !items.isEmpty else {
-      return nil
-    }
+  private func invokeFlutter(method: String) {
+    methodChannel?.invokeMethod(method, arguments: nil) { [weak self] result in
+      guard let self else {
+        return
+      }
 
-    let header = map["header"] as? String
-    return CPListSection(
+      if let error = result as? FlutterError {
+        self.renderErrorTemplate(message: error.message ?? error.code)
+        return
+      }
+
+      guard let arguments = result as? [String: Any],
+            let snapshot = TelemetrySnapshot(arguments) else {
+        return
+      }
+
+      self.latestSnapshot = snapshot
+      self.render(snapshot: snapshot, animated: true)
+    }
+  }
+
+  private func render(snapshot: TelemetrySnapshot, animated: Bool) {
+    latestSnapshot = snapshot
+    let template = makeInformationTemplate(snapshot: snapshot)
+    currentRootTemplate = template
+    interfaceController?.setRootTemplate(template, animated: animated)
+  }
+
+  private func renderWaitingTemplate() {
+    let waitingItems = [
+      CPInformationItem(title: "Status", detail: "Waiting for telemetry"),
+      CPInformationItem(title: "Updated", detail: "Not yet available"),
+    ]
+    let template = CPInformationTemplate(
+      title: "Telemetry",
+      layout: .twoColumn,
+      items: waitingItems,
+      actions: [
+        CPTextButton(
+          title: "Start",
+          textStyle: .confirm,
+          handler: { [weak self] _ in
+            self?.requestStartTracking()
+          }
+        ),
+      ]
+    )
+    currentRootTemplate = template
+    interfaceController?.setRootTemplate(template, animated: false)
+  }
+
+  private func renderErrorTemplate(message: String) {
+    let items = [
+      CPInformationItem(title: "Status", detail: "Error"),
+      CPInformationItem(title: "Message", detail: message),
+    ]
+    let template = CPInformationTemplate(
+      title: "Telemetry",
+      layout: .twoColumn,
       items: items,
-      header: header,
-      sectionIndexTitle: nil
+      actions: [
+        CPTextButton(
+          title: "Retry",
+          textStyle: .normal,
+          handler: { [weak self] _ in
+            self?.requestTelemetrySnapshot()
+          }
+        ),
+      ]
+    )
+    currentRootTemplate = template
+    interfaceController?.setRootTemplate(template, animated: true)
+  }
+
+  private func makeInformationTemplate(snapshot: TelemetrySnapshot) -> CPInformationTemplate {
+    let items = [
+      CPInformationItem(title: "Status", detail: formattedStatus(snapshot.status)),
+      CPInformationItem(title: "Latitude", detail: formatCoordinate(snapshot.latitude)),
+      CPInformationItem(title: "Longitude", detail: formatCoordinate(snapshot.longitude)),
+      CPInformationItem(title: "Rotation", detail: formatRotation(snapshot)),
+      CPInformationItem(title: "Elevation", detail: formatElevation(snapshot.altitudeMeters)),
+      CPInformationItem(title: "Updated", detail: formatUpdated(snapshot.updatedAtIso8601)),
+      CPInformationItem(title: "Message", detail: snapshot.errorMessage ?? "Ready"),
+    ]
+
+    let actions: [CPTextButton]
+    if snapshot.isTracking {
+      actions = [
+        CPTextButton(
+          title: "Stop",
+          textStyle: .cancel,
+          handler: { [weak self] _ in
+            self?.requestStopTracking()
+          }
+        ),
+      ]
+    } else {
+      actions = [
+        CPTextButton(
+          title: "Start",
+          textStyle: .confirm,
+          handler: { [weak self] _ in
+            self?.requestStartTracking()
+          }
+        ),
+      ]
+    }
+
+    return CPInformationTemplate(
+      title: "Telemetry",
+      layout: .twoColumn,
+      items: items,
+      actions: actions
     )
   }
 
-  private func makeItem(from map: [String: Any]) -> CPListItem? {
-    guard let title = map["title"] as? String else {
-      return nil
+  private func formatCoordinate(_ value: Double?) -> String {
+    guard let value else {
+      return "Unavailable"
     }
 
-    return CPListItem(text: title, detailText: map["subtitle"] as? String)
+    return String(format: "%.6f", value)
+  }
+
+  private func formatRotation(_ snapshot: TelemetrySnapshot) -> String {
+    guard let headingDegrees = snapshot.headingDegrees else {
+      return "Unavailable"
+    }
+
+    let headingText = String(format: "%.1f°", headingDegrees)
+    if let directionLabel = snapshot.directionLabel {
+      return "\(headingText) \(directionLabel)"
+    }
+
+    return headingText
+  }
+
+  private func formatElevation(_ value: Double?) -> String {
+    guard let value else {
+      return "Unavailable"
+    }
+
+    return String(format: "%.1f m", value)
+  }
+
+  private func formatUpdated(_ updatedAtIso8601: String?) -> String {
+    guard let updatedAtIso8601 else {
+      return "Never"
+    }
+
+    return updatedAtIso8601
+  }
+
+  private func formattedStatus(_ status: String) -> String {
+    switch status {
+    case "idle":
+      return "Idle"
+    case "starting":
+      return "Starting"
+    case "running":
+      return "Running"
+    case "stopping":
+      return "Stopping"
+    case "permissionDenied":
+      return "Permission Denied"
+    case "serviceDisabled":
+      return "Service Disabled"
+    default:
+      return "Error"
+    }
   }
 }
 

@@ -1,18 +1,27 @@
 import Flutter
 import UIKit
 
-class SceneDelegate: FlutterSceneDelegate {
-  override func scene(
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(
     _ scene: UIScene,
     willConnectTo session: UISceneSession,
     options connectionOptions: UIScene.ConnectionOptions
   ) {
-    super.scene(scene, willConnectTo: session, options: connectionOptions)
-
-    guard let controller = window?.rootViewController as? FlutterViewController else {
+    guard let windowScene = scene as? UIWindowScene,
+          let appDelegate = UIApplication.shared.delegate as? AppDelegate else {
       return
     }
 
-    CarPlayManager.shared.registerMethodChannel(binaryMessenger: controller.binaryMessenger)
+    let flutterViewController = FlutterViewController(
+      engine: appDelegate.sharedFlutterEngine,
+      nibName: nil,
+      bundle: nil
+    )
+    let window = UIWindow(windowScene: windowScene)
+    window.rootViewController = flutterViewController
+    self.window = window
+    window.makeKeyAndVisible()
   }
 }
